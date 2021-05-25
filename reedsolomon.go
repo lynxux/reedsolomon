@@ -14,11 +14,11 @@ package reedsolomon
 import (
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"runtime"
 	"sync"
 
+	//"fmt"
 	"github.com/klauspost/cpuid/v2"
 )
 
@@ -107,10 +107,10 @@ type Encoder interface {
 // distribution of datashards and parity shards.
 // Construct if using New()
 type reedSolomon struct {
-	DataShards   int    // Number of data shards, should not be modified.
-	ParityShards int    // Number of parity shards, should not be modified.
-	Shards       int    // Total number of shards. Calculated, and should not be modified.
-	m            matrix //编码矩阵
+	DataShards   int // Number of data shards, should not be modified.
+	ParityShards int // Number of parity shards, should not be modified.
+	Shards       int // Total number of shards. Calculated, and should not be modified.
+	m            matrix
 	tree         *inversionTree
 	parity       [][]byte
 	o            options
@@ -133,6 +133,11 @@ var ErrMaxShardNum = errors.New("cannot create Encoder with more than 256 data+p
 // The top square of the matrix is guaranteed to be an identity
 // matrix, which means that the data shards are unchanged after
 // encoding.
+/*
+给定数据分片的数量和总分片的数量，buildMatrix创建用于编码的矩阵。
+保证矩阵的顶部是一个单位矩阵，这意味着编码后数据分片保持不变。
+范德蒙矩阵
+ */
 func buildMatrix(dataShards, totalShards int) (matrix, error) {
 	// Start with a Vandermonde matrix.  This matrix would work,
 	// in theory, but doesn't have the property that the data
@@ -155,8 +160,24 @@ func buildMatrix(dataShards, totalShards int) (matrix, error) {
 	if err != nil {
 		return nil, err
 	}
+	//fmt.Println(vm.Multiply(topInv))
+	codeMatrix, e := vm.Multiply(topInv)
 
-	return vm.Multiply(topInv)
+	for i := dataShards; i< dataShards + 2;i ++{
+		for j:=0; j< dataShards;j++{
+			if(i == dataShards && j < dataShards / 2){
+				codeMatrix[i][j]  = 1;
+			}else if(i == dataShards && j >= dataShards / 2){
+				codeMatrix[i][j] = 0;
+			}else if(i == dataShards + 1 && j < dataShards /2){
+				codeMatrix[i][j]  = 0;
+			}else if(i == dataShards + 1 && j >= dataShards /2){
+				codeMatrix[i][j]  = 1;
+			}
+		}
+	}
+	//fmt.Println(codeMatrix)
+	return codeMatrix,e
 }
 
 // buildMatrixPAR1 creates the matrix to use for encoding according to
@@ -264,16 +285,20 @@ func New(dataShards, parityShards int, opts ...Option) (Encoder, error) {
 	}
 
 	var err error
-	switch {
-	case r.o.fastOneParity && parityShards == 1:
-		r.m, err = buildXorMatrix(dataShards, r.Shards)
-	case r.o.useCauchy:
-		r.m, err = buildMatrixCauchy(dataShards, r.Shards)
-	case r.o.usePAR1Matrix:
-		r.m, err = buildMatrixPAR1(dataShards, r.Shards)
-	default:
-		r.m, err = buildMatrix(dataShards, r.Shards)
-	}
+	//switch {
+	//case r.o.fastOneParity && parityShards == 1:
+	//	r.m, err = buildXorMatrix(dataShards, r.Shards)
+	//case r.o.useCauchy:
+	//	r.m, err = buildMatrixCauchy(dataShards, r.Shards)
+	//case r.o.usePAR1Matrix:
+	//	r.m, err = buildMatrixPAR1(dataShards, r.Shards)
+	//default:
+	//	r.m, err = buildMatrix(dataShards, r.Shards)
+	//}
+
+	// 全部都改成buildMatrix？
+	r.m, err = buildMatrix(dataShards,r.Shards)
+
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +364,8 @@ func New(dataShards, parityShards int, opts ...Option) (Encoder, error) {
 	// The inversion root node will have the identity matrix as
 	// its inversion matrix because it implies there are no errors
 	// with the original data.
+	// 反转矩阵被缓存在一棵树上，这棵树是由要重建的数据的无效行的索引所决定的。
+	// 反转根节点将以单位矩阵作为其反转矩阵，因为这意味着原始数据不存在错误。
 	if r.o.inversionCache {
 		r.tree = newInversionTree(dataShards, parityShards)
 	}
@@ -378,9 +405,11 @@ func (r *reedSolomon) Encode(shards [][]byte) error {
 	}
 
 	// Get the slice of output buffers.
+	//output是编码后的矩阵？（即不包含原数据矩阵？）
 	output := shards[r.DataShards:]
 
-	// Do the coding.   这里改变output，是否会改变shard？
+	// Do the coding.
+	// parity 是编码矩阵的非单位矩阵部分，shard[0:r.DataShards]是编码后的数据矩阵（未改变），output，ParityShards是编码后矩阵的行数，len是列数
 	r.codeSomeShards(r.parity, shards[0:r.DataShards], output, r.ParityShards, len(shards[0]))
 	return nil
 }
@@ -499,6 +528,7 @@ func (r *reedSolomon) Verify(shards [][]byte) (bool, error) {
 	toCheck := shards[r.DataShards:]
 
 	// Do the checking.
+	// parity 是编码矩阵的非单位矩阵部分，shard[0:r.DataShards]是编码后的数据矩阵（未改变），tocheck是编码后的矩阵部分，ParityShards是编码后矩阵的行数，len是列数
 	return r.checkSomeShards(r.parity, shards[0:r.DataShards], toCheck, r.ParityShards, len(shards[0])), nil
 }
 
@@ -511,33 +541,45 @@ func (r *reedSolomon) Verify(shards [][]byte) (bool, error) {
 // The number of outputs computed, and the
 // number of matrix rows used, is determined by
 // outputCount, which is the number of outputs to compute.
+//将编码矩阵中的行子集乘以完整的输入分片集，以生成一些输出分片。
+//'matrixRows'是要使用的矩阵中的行。
+//'inputs'字节数组的数组，每个字节数组都是一个输入分片。
+//使用的输入数量取决于每个矩阵行的长度。
+//输出字节数组，其中存储了计算出的碎片。
+//计算的输出数量以及所使用的矩阵行的数量由outputCount决定，outputCount是要计算的输出数量。
+// parity 是编码矩阵的非单位矩阵部分，shard[0:r.DataShards]是编码后的数据矩阵（未改变），output，ParityShards是编码后矩阵的行数，len是列数
+//checkSomechards要改嘛？
 func (r *reedSolomon) codeSomeShards(matrixRows, inputs, outputs [][]byte, outputCount, byteCount int) {
 	if len(outputs) == 0 {
 		return
 	}
-	switch {
-	case r.o.useAVX512 && r.o.maxGoroutines > 1 && byteCount > r.o.minSplitSize && len(inputs) >= 4 && len(outputs) >= 2:
-		r.codeSomeShardsAvx512P(matrixRows, inputs, outputs, outputCount, byteCount)
-		return
-	case r.o.useAVX512 && len(inputs) >= 4 && len(outputs) >= 2:
-		r.codeSomeShardsAvx512(matrixRows, inputs, outputs, outputCount, byteCount)
-		return
-	case r.o.maxGoroutines > 1 && byteCount > r.o.minSplitSize:
-		r.codeSomeShardsP(matrixRows, inputs, outputs, outputCount, byteCount)
-		return
-	}
+
+	//这里不能使用多线程
+	//switch {
+	//case r.o.useAVX512 && r.o.maxGoroutines > 1 && byteCount > r.o.minSplitSize && len(inputs) >= 4 && len(outputs) >= 2:
+	//	r.codeSomeShardsAvx512P(matrixRows, inputs, outputs, outputCount, byteCount)
+	//	return
+	//case r.o.useAVX512 && len(inputs) >= 4 && len(outputs) >= 2:
+	//	r.codeSomeShardsAvx512(matrixRows, inputs, outputs, outputCount, byteCount)
+	//	return
+	//case r.o.maxGoroutines > 1 && byteCount > r.o.minSplitSize:
+	//	r.codeSomeShardsP(matrixRows, inputs, outputs, outputCount, byteCount)
+	//	return
+	//}
 
 	// Process using no goroutines
 	start, end := 0, r.o.perRound
 	if end > len(inputs[0]) {
 		end = len(inputs[0])
 	}
-	if avx2CodeGen && r.o.useAVX2 && byteCount >= 32 && len(inputs)+len(outputs) >= 4 && len(inputs) <= maxAvx2Inputs && len(outputs) <= maxAvx2Outputs {
-		m := genAvx2Matrix(matrixRows, len(inputs), len(outputs), r.mPool.Get().([]byte))
-		start += galMulSlicesAvx2(m, inputs, outputs, 0, byteCount)
-		r.mPool.Put(m)
-		end = len(inputs[0])
-	}
+	end = len(inputs[0])
+
+	//if avx2CodeGen && r.o.useAVX2 && byteCount >= 32 && len(inputs)+len(outputs) >= 4 && len(inputs) <= maxAvx2Inputs && len(outputs) <= maxAvx2Outputs {
+	//	m := genAvx2Matrix(matrixRows, len(inputs), len(outputs), r.mPool.Get().([]byte))
+	//	start += galMulSlicesAvx2(m, inputs, outputs, 0, byteCount)
+	//	r.mPool.Put(m)
+	//	end = len(inputs[0])
+	//}
 
 	for start < len(inputs[0]) {
 		for c := 0; c < r.DataShards; c++ {
@@ -555,6 +597,7 @@ func (r *reedSolomon) codeSomeShards(matrixRows, inputs, outputs [][]byte, outpu
 		if end > len(inputs[0]) {
 			end = len(inputs[0])
 		}
+		end = len(inputs[0])
 	}
 }
 
@@ -621,6 +664,7 @@ func (r *reedSolomon) codeSomeShardsP(matrixRows, inputs, outputs [][]byte, outp
 // checkSomeShards is mostly the same as codeSomeShards,
 // except this will check values and return
 // as soon as a difference is found.
+// parity 是编码矩阵的非单位矩阵部分，shard[0:r.DataShards]是编码后的数据矩阵（未改变），tocheck是编码后的矩阵部分，ParityShards是编码后矩阵的行数，len是列数
 func (r *reedSolomon) checkSomeShards(matrixRows, inputs, toCheck [][]byte, outputCount, byteCount int) bool {
 	if len(toCheck) == 0 {
 		return true
@@ -752,6 +796,7 @@ func shardSize(shards [][]byte) int {
 // The reconstructed shard set is complete, but integrity is not verified.
 // Use the Verify function to check if data set is ok.
 func (r *reedSolomon) Reconstruct(shards [][]byte) error {
+	// fmt.Println("myRS")
 	return r.reconstruct(shards, false)
 }
 
@@ -771,7 +816,6 @@ func (r *reedSolomon) Reconstruct(shards [][]byte) error {
 // As the reconstructed shard set may contain missing parity shards,
 // calling the Verify function is likely to fail.
 func (r *reedSolomon) ReconstructData(shards [][]byte) error {
-	fmt.Println("myRS")
 	return r.reconstruct(shards, true)
 }
 
@@ -784,6 +828,7 @@ func (r *reedSolomon) ReconstructData(shards [][]byte) error {
 // If there are too few shards to reconstruct the missing
 // ones, ErrTooFewShards will be returned.
 func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
+	//fmt.Println("myRS")
 	if len(shards) != r.Shards {
 		return ErrTooFewShards
 	}
@@ -793,10 +838,13 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 		return err
 	}
 
+
+	//返回数据的列数？？？
 	shardSize := shardSize(shards)
+	//fmt.Println("shardsize: ",shardSize)
 
 	// Quick check: are all of the shards present?  If so, there's
-	// nothing to do.
+	// nothing to do. 即：数据没有损坏，直接返回即可
 	numberPresent := 0
 	dataPresent := 0
 	for i := 0; i < r.Shards; i++ {
@@ -813,7 +861,7 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 		return nil
 	}
 
-	// More complete sanity check
+	// More complete sanity check   剩余的所有数据（数据＋编码）的行数少于真实数据部分的行数
 	if numberPresent < r.DataShards {
 		return ErrTooFewShards
 	}
@@ -825,68 +873,232 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 	//
 	// Also, create an array of indices of the valid rows we do have
 	// and the invalid rows we don't have up until we have enough valid rows.
+	//拉出一个仅保留与子矩阵的行相对应的分片的数组。 这些碎片将作为重新创建丢失的数据碎片的解码过程的输入。
+	//
+	//同样，在拥有足够的有效行之前，创建一个包含我们拥有的有效行和我们没有的无效行的索引的数组。
 	subShards := make([][]byte, r.DataShards)
 	validIndices := make([]int, r.DataShards)
 	invalidIndices := make([]int, 0)
-	subMatrixRow := 0
+	subMatrixRow := 0   //行的计数
 	for matrixRow := 0; matrixRow < r.Shards && subMatrixRow < r.DataShards; matrixRow++ {
-		if len(shards[matrixRow]) != 0 {
+		if len(shards[matrixRow]) != 0 { //如果传进来的该数据行存在，则将数据的该行保存到subShards中，将该行的下标保存在validIndices中。
 			subShards[subMatrixRow] = shards[matrixRow]
 			validIndices[subMatrixRow] = matrixRow
 			subMatrixRow++
 		} else {
-			invalidIndices = append(invalidIndices, matrixRow)
+			invalidIndices = append(invalidIndices, matrixRow)   //如果该行不存在，则把该行的下标保存到invalidIndices中
 		}
 	}
+
+	//判断错误的情况
+	isParty := 0
+	isfront := 0
+	isblack := 0
+	if len(invalidIndices) > 1 {
+		for i:= 0;i < len(invalidIndices);i++ {
+			if invalidIndices[i] < r.DataShards/2 {
+				isfront = 1
+			}
+			if invalidIndices[i] >= r.DataShards / 2 && invalidIndices[i] < r.DataShards {
+				isblack = 1
+			}
+			if invalidIndices[i] >= r.DataShards {
+				isParty = 1
+			}
+
+		}
+	}
+
+
 
 	// Attempt to get the cached inverted matrix out of the tree
 	// based on the indices of the invalid rows.
+	////尝试根据无效行的索引从树中获取缓存的倒置矩阵。
 	dataDecodeMatrix := r.tree.GetInvertedMatrix(invalidIndices)
 
-	// If the inverted matrix isn't cached in the tree yet we must
-	// construct it ourselves and insert it into the tree for the
-	// future.  In this way the inversion tree is lazily loaded.
-	if dataDecodeMatrix == nil {
-		// Pull out the rows of the matrix that correspond to the
-		// shards that we have and build a square matrix.  This
-		// matrix could be used to generate the shards that we have
-		// from the original data.
-		subMatrix, _ := newMatrix(r.DataShards, r.DataShards)
-		for subMatrixRow, validIndex := range validIndices {
+
+	//custom
+	//fmt.Println("invalidIndices[0]",invalidIndices[0])
+	if len(invalidIndices) == 1 && invalidIndices[0] < r.DataShards {
+		//fmt.Println("invalidIndeices = 1")
+		subMatrix, _ := newMatrix(r.DataShards, r.DataShards)   //生成一个nxn的矩阵，n为数据部分的行数
+		for subMatrixRow, validIndex := range validIndices {  //填充该矩阵的内容，这里的
 			for c := 0; c < r.DataShards; c++ {
-				subMatrix[subMatrixRow][c] = r.m[validIndex][c]
+				subMatrix[subMatrixRow][c] = r.m[validIndex][c]  //将输入数据中有效行在原编码矩阵m中对应的行存放到submatrix中
 			}
 		}
-		// Invert the matrix, so we can go from the encoded shards
-		// back to the original data.  Then pull out the row that
-		// generates the shard that we want to decode.  Note that
-		// since this matrix maps back to the original data, it can
-		// be used to create a data shard, but not a parity shard.
-		dataDecodeMatrix, err = subMatrix.Invert()
+		//fmt.Println(subMatrix)
+		//对subMatrix做个处理
+		//对 subShards 和 validIndeices做个处理
+		if(invalidIndices[0] >= (r.DataShards)/2){
+			for l:= 0;l < r.DataShards;l++{
+				subMatrix[r.DataShards-1][l] = r.m[r.DataShards+1][l]
+			}
+			subShards[subMatrixRow-1] = shards[r.DataShards+1]
+			validIndices[subMatrixRow-1] = r.DataShards+1
+		}
+
+		dataDecodeMatrix, err = subMatrix.Invert()    //还存在的行对应的编码矩阵的逆矩阵
+		//fmt.Println(dataDecodeMatrix)
 		if err != nil {
 			return err
 		}
 
-		// Cache the inverted matrix in the tree for future use keyed on the
-		// indices of the invalid rows.
-		err = r.tree.InsertInvertedMatrix(invalidIndices, dataDecodeMatrix, r.Shards)
+		//outputs := make([][]byte, 1)
+		//matrixRows := make([][]byte, 1)
+		//outputCount := 0
+		//
+		//for iShard := 0; iShard < r.DataShards; iShard++ {   //取出剩余数据中真实数据部分的 被损坏的行
+		//	if len(shards[iShard]) == 0 {  //当前行损坏   损坏的行数会小于n？？
+		//		if cap(shards[iShard]) >= shardSize {   //为当前行分配空间
+		//			shards[iShard] = shards[iShard][0:shardSize]
+		//		} else {
+		//			shards[iShard] = make([]byte, shardSize)
+		//		}
+		//		outputs[outputCount] = shards[iShard]
+		//		matrixRows[outputCount] = dataDecodeMatrix[iShard]
+		//		outputCount++
+		//	}
+		//}
+		//r.codeSomeShards(matrixRows, subShards, outputs[:outputCount], outputCount, shardSize)
+		//
+		//if dataOnly {
+		//	// Exit out early if we are only interested in the data shards
+		//	return nil
+		//}
+		//
+		//outputCount = 0
+		//for iShard := r.DataShards; iShard < r.Shards; iShard++ { //
+		//	if len(shards[iShard]) == 0 {  //传入的数据的已编码部分，如果被损坏
+		//		if cap(shards[iShard]) >= shardSize {
+		//			shards[iShard] = shards[iShard][0:shardSize]
+		//		} else {
+		//			shards[iShard] = make([]byte, shardSize)
+		//		}
+		//		outputs[outputCount] = shards[iShard]
+		//		matrixRows[outputCount] = r.parity[iShard-r.DataShards]
+		//		outputCount++
+		//	}
+		//}
+		////matrixRows 编码矩阵中的非单位矩阵部分
+		////shards[:r.DataShards] 数据部分
+		//r.codeSomeShards(matrixRows, shards[:r.DataShards], outputs[:outputCount], outputCount, shardSize)
+
+	} else if isfront == 1 && isblack == 0 && isParty == 0{  //缺失多行 但是都在前半部分
+
+		//对subMatrix做个处理
+		//对 subShards 和 validIndeices做个处理
+		//先修改subShards,validIndeices 再修改 subMatrix
+		subMatrixRow := 0   //行的计数
+		for matrixRow := 0; matrixRow < r.Shards && subMatrixRow < r.DataShards; matrixRow++ {
+			if len(shards[matrixRow]) != 0 && matrixRow != r.DataShards+1{ //如果传进来的该数据行存在，则将数据的该行保存到subShards中，将该行的下标保存在validIndices中。
+				subShards[subMatrixRow] = shards[matrixRow]
+				validIndices[subMatrixRow] = matrixRow
+				subMatrixRow++
+			} else if len(shards[matrixRow]) == 0 {
+				invalidIndices = append(invalidIndices, matrixRow)   //如果该行不存在，则把该行的下标保存到invalidIndices中
+			}
+		}
+
+		subMatrix, _ := newMatrix(r.DataShards, r.DataShards)   //生成一个nxn的矩阵，n为数据部分的行数
+		for subMatrixRow1, validIndex := range validIndices {  //填充该矩阵的内容，这里的
+			for c := 0; c < r.DataShards; c++ {
+				subMatrix[subMatrixRow1][c] = r.m[validIndex][c]  //将输入数据中有效行在原编码矩阵m中对应的行存放到submatrix中
+			}
+		}
+
+		dataDecodeMatrix, err = subMatrix.Invert()    //还存在的行对应的编码矩阵的逆矩阵
+		//fmt.Println(dataDecodeMatrix)
 		if err != nil {
 			return err
 		}
+
+
+	} else if isfront == 0 && isblack == 1 && isParty == 0{
+		//对subMatrix做个处理
+		//对 subShards 和 validIndeices做个处理
+		//先修改subShards,validIndeices 再修改 subMatrix
+		subMatrixRow := 0   //行的计数
+		for matrixRow := 0; matrixRow < r.Shards && subMatrixRow < r.DataShards; matrixRow++ {
+			if len(shards[matrixRow]) != 0 && matrixRow != r.DataShards { //如果传进来的该数据行存在，则将数据的该行保存到subShards中，将该行的下标保存在validIndices中。
+				subShards[subMatrixRow] = shards[matrixRow]
+				validIndices[subMatrixRow] = matrixRow
+				subMatrixRow++
+			} else if len(shards[matrixRow]) == 0 {
+				invalidIndices = append(invalidIndices, matrixRow)   //如果该行不存在，则把该行的下标保存到invalidIndices中
+			}
+		}
+
+		subMatrix, _ := newMatrix(r.DataShards, r.DataShards)   //生成一个nxn的矩阵，n为数据部分的行数
+		for subMatrixRow1, validIndex := range validIndices {  //填充该矩阵的内容，这里的
+			for c := 0; c < r.DataShards; c++ {
+				subMatrix[subMatrixRow1][c] = r.m[validIndex][c]  //将输入数据中有效行在原编码矩阵m中对应的行存放到submatrix中
+			}
+		}
+
+		dataDecodeMatrix, err = subMatrix.Invert()    //还存在的行对应的编码矩阵的逆矩阵
+		//fmt.Println(dataDecodeMatrix)
+		if err != nil {
+			return err
+		}
+
+
+	} else {
+
+
+
+		// If the inverted matrix isn't cached in the tree yet we must
+		// construct it ourselves and insert it into the tree for the
+		// future.  In this way the inversion tree is lazily loaded.
+		if dataDecodeMatrix == nil { //无法从树中获取其逆矩阵
+			// Pull out the rows of the matrix that correspond to the
+			// shards that we have and build a square matrix.  This
+			// matrix could be used to generate the shards that we have
+			// from the original data.
+			////如果倒置矩阵未缓存在树中，则我们必须自己构造它，并将其插入树中以备将来使用。 这样，反型树被延迟加载。
+			// 这里尝试构造其逆矩阵，但是不保存到树中
+
+			subMatrix, _ := newMatrix(r.DataShards, r.DataShards) //生成一个nxn的矩阵，n为数据部分的行数
+			for subMatrixRow, validIndex := range validIndices {  //填充该矩阵的内容，这里的
+				for c := 0; c < r.DataShards; c++ {
+					subMatrix[subMatrixRow][c] = r.m[validIndex][c] //将输入数据中有效行在原编码矩阵m中对应的行存放到submatrix中
+				}
+			}
+			// Invert the matrix, so we can go from the encoded shards
+			// back to the original data.  Then pull out the row that
+			// generates the shard that we want to decode.  Note that
+			// since this matrix maps back to the original data, it can
+			// be used to create a data shard, but not a parity shard.
+			dataDecodeMatrix, err = subMatrix.Invert() //还存在的行对应的编码矩阵的逆矩阵
+			if err != nil {
+				return err
+			}
+
+			// Cache the inverted matrix in the tree for future use keyed on the
+			// indices of the invalid rows.
+			//这里先不缓存到树中
+			//err = r.tree.InsertInvertedMatrix(invalidIndices, dataDecodeMatrix, r.Shards)
+			//if err != nil {
+			//	return err
+			//}
+		}
+
 	}
-
 	// Re-create any data shards that were missing.
 	//
 	// The input to the coding is all of the shards we actually
 	// have, and the output is the missing data shards.  The computation
 	// is done using the special decode matrix we just built.
+	//要修改的部分！！！
+	//重新创建所有丢失的数据碎片。
+	//编码的输入是我们实际拥有的所有分片，而输出是缺少的数据分片。 该计算是使用我们刚刚构建的特殊解码矩阵完成的。
 	outputs := make([][]byte, r.ParityShards)
 	matrixRows := make([][]byte, r.ParityShards)
 	outputCount := 0
 
-	for iShard := 0; iShard < r.DataShards; iShard++ {
-		if len(shards[iShard]) == 0 {
-			if cap(shards[iShard]) >= shardSize {
+	for iShard := 0; iShard < r.DataShards; iShard++ { //取出剩余数据中真实数据部分的 被损坏的行
+		if len(shards[iShard]) == 0 { //当前行损坏   损坏的行数会小于n？？
+			if cap(shards[iShard]) >= shardSize { //为当前行分配空间
 				shards[iShard] = shards[iShard][0:shardSize]
 			} else {
 				shards[iShard] = make([]byte, shardSize)
@@ -896,6 +1108,9 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 			outputCount++
 		}
 	}
+	//matrixRows是逆矩阵中 缺失数据对应的那几行（只包含真实数据部分，不包含编码后的部分）
+	//subshards是真实数据（编码后）还存在的行
+	//outputs得到是上面2个矩阵的乘积，即为真实数据的缺失部分
 	r.codeSomeShards(matrixRows, subShards, outputs[:outputCount], outputCount, shardSize)
 
 	if dataOnly {
@@ -909,9 +1124,12 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 	// The input to the coding is ALL of the data shards, including
 	// any that we just calculated.  The output is whichever of the
 	// data shards were missing.
+
+	//现在我们所有数据分片都完整无缺，我们可以计算丢失的任何奇偶校验了。
+	//编码的输入是所有数据分片，包括我们刚刚计算出的所有数据分片。 输出是缺少的任何数据分片。
 	outputCount = 0
-	for iShard := r.DataShards; iShard < r.Shards; iShard++ {
-		if len(shards[iShard]) == 0 {
+	for iShard := r.DataShards; iShard < r.Shards; iShard++ { //
+		if len(shards[iShard]) == 0 { //传入的数据的已编码部分，如果被损坏
 			if cap(shards[iShard]) >= shardSize {
 				shards[iShard] = shards[iShard][0:shardSize]
 			} else {
@@ -922,7 +1140,10 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 			outputCount++
 		}
 	}
+	//matrixRows 编码矩阵中的非单位矩阵部分
+	//shards[:r.DataShards] 数据部分
 	r.codeSomeShards(matrixRows, shards[:r.DataShards], outputs[:outputCount], outputCount, shardSize)
+
 	return nil
 }
 
@@ -947,7 +1168,6 @@ func (r *reedSolomon) Split(data []byte) ([][]byte, error) {
 		return nil, ErrShortData
 	}
 	// Calculate number of bytes per data shard.
-
 	perShard := (len(data) + r.DataShards - 1) / r.DataShards
 
 	if cap(data) > len(data) {
