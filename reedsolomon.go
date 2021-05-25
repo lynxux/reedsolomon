@@ -14,6 +14,7 @@ package reedsolomon
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"runtime"
 	"sync"
@@ -106,10 +107,10 @@ type Encoder interface {
 // distribution of datashards and parity shards.
 // Construct if using New()
 type reedSolomon struct {
-	DataShards   int // Number of data shards, should not be modified.
-	ParityShards int // Number of parity shards, should not be modified.
-	Shards       int // Total number of shards. Calculated, and should not be modified.
-	m            matrix
+	DataShards   int    // Number of data shards, should not be modified.
+	ParityShards int    // Number of parity shards, should not be modified.
+	Shards       int    // Total number of shards. Calculated, and should not be modified.
+	m            matrix //编码矩阵
 	tree         *inversionTree
 	parity       [][]byte
 	o            options
@@ -379,7 +380,7 @@ func (r *reedSolomon) Encode(shards [][]byte) error {
 	// Get the slice of output buffers.
 	output := shards[r.DataShards:]
 
-	// Do the coding.
+	// Do the coding.   这里改变output，是否会改变shard？
 	r.codeSomeShards(r.parity, shards[0:r.DataShards], output, r.ParityShards, len(shards[0]))
 	return nil
 }
@@ -770,6 +771,7 @@ func (r *reedSolomon) Reconstruct(shards [][]byte) error {
 // As the reconstructed shard set may contain missing parity shards,
 // calling the Verify function is likely to fail.
 func (r *reedSolomon) ReconstructData(shards [][]byte) error {
+	fmt.Println("myRS")
 	return r.reconstruct(shards, true)
 }
 
@@ -945,6 +947,7 @@ func (r *reedSolomon) Split(data []byte) ([][]byte, error) {
 		return nil, ErrShortData
 	}
 	// Calculate number of bytes per data shard.
+
 	perShard := (len(data) + r.DataShards - 1) / r.DataShards
 
 	if cap(data) > len(data) {
