@@ -944,45 +944,45 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 			return err
 		}
 
-		//outputs := make([][]byte, 1)
-		//matrixRows := make([][]byte, 1)
-		//outputCount := 0
-		//
-		//for iShard := 0; iShard < r.DataShards; iShard++ {   //取出剩余数据中真实数据部分的 被损坏的行
-		//	if len(shards[iShard]) == 0 {  //当前行损坏   损坏的行数会小于n？？
-		//		if cap(shards[iShard]) >= shardSize {   //为当前行分配空间
-		//			shards[iShard] = shards[iShard][0:shardSize]
-		//		} else {
-		//			shards[iShard] = make([]byte, shardSize)
-		//		}
-		//		outputs[outputCount] = shards[iShard]
-		//		matrixRows[outputCount] = dataDecodeMatrix[iShard]
-		//		outputCount++
-		//	}
-		//}
-		//r.codeSomeShards(matrixRows, subShards, outputs[:outputCount], outputCount, shardSize)
-		//
-		//if dataOnly {
-		//	// Exit out early if we are only interested in the data shards
-		//	return nil
-		//}
-		//
-		//outputCount = 0
-		//for iShard := r.DataShards; iShard < r.Shards; iShard++ { //
-		//	if len(shards[iShard]) == 0 {  //传入的数据的已编码部分，如果被损坏
-		//		if cap(shards[iShard]) >= shardSize {
-		//			shards[iShard] = shards[iShard][0:shardSize]
-		//		} else {
-		//			shards[iShard] = make([]byte, shardSize)
-		//		}
-		//		outputs[outputCount] = shards[iShard]
-		//		matrixRows[outputCount] = r.parity[iShard-r.DataShards]
-		//		outputCount++
-		//	}
-		//}
-		////matrixRows 编码矩阵中的非单位矩阵部分
-		////shards[:r.DataShards] 数据部分
-		//r.codeSomeShards(matrixRows, shards[:r.DataShards], outputs[:outputCount], outputCount, shardSize)
+		outputs := make([][]byte, 1)
+		matrixRows := make([][]byte, 1)
+		outputCount := 0
+
+		for iShard := 0; iShard < r.DataShards; iShard++ {   //取出剩余数据中真实数据部分的 被损坏的行
+			if len(shards[iShard]) == 0 {  //当前行损坏   损坏的行数会小于n？？
+				if cap(shards[iShard]) >= shardSize {   //为当前行分配空间
+					shards[iShard] = shards[iShard][0:shardSize]
+				} else {
+					shards[iShard] = make([]byte, shardSize)
+				}
+				outputs[outputCount] = shards[iShard]
+				matrixRows[outputCount] = dataDecodeMatrix[iShard]
+				outputCount++
+			}
+		}
+		r.codeSomeShards(matrixRows, subShards, outputs[:outputCount], outputCount, shardSize)
+
+		if dataOnly {
+			// Exit out early if we are only interested in the data shards
+			return nil
+		}
+
+		outputCount = 0
+		for iShard := r.DataShards; iShard < r.Shards; iShard++ { //
+			if len(shards[iShard]) == 0 {  //传入的数据的已编码部分，如果被损坏
+				if cap(shards[iShard]) >= shardSize {
+					shards[iShard] = shards[iShard][0:shardSize]
+				} else {
+					shards[iShard] = make([]byte, shardSize)
+				}
+				outputs[outputCount] = shards[iShard]
+				matrixRows[outputCount] = r.parity[iShard-r.DataShards]
+				outputCount++
+			}
+		}
+		//matrixRows 编码矩阵中的非单位矩阵部分
+		//shards[:r.DataShards] 数据部分
+		r.codeSomeShards(matrixRows, shards[:r.DataShards], outputs[:outputCount], outputCount, shardSize)
 
 	} else if isfront == 1 && isblack == 0 && isParty == 0{  //缺失多行 但是都在前半部分
 
@@ -1013,6 +1013,66 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 			return err
 		}
 
+		// Re-create any data shards that were missing.
+		//
+		// The input to the coding is all of the shards we actually
+		// have, and the output is the missing data shards.  The computation
+		// is done using the special decode matrix we just built.
+		//要修改的部分！！！
+		//重新创建所有丢失的数据碎片。
+		//编码的输入是我们实际拥有的所有分片，而输出是缺少的数据分片。 该计算是使用我们刚刚构建的特殊解码矩阵完成的。
+		outputs := make([][]byte, r.ParityShards)
+		matrixRows := make([][]byte, r.ParityShards)
+		outputCount := 0
+
+		for iShard := 0; iShard < r.DataShards; iShard++ { //取出剩余数据中真实数据部分的 被损坏的行
+			if len(shards[iShard]) == 0 { //当前行损坏   损坏的行数会小于n？？
+				if cap(shards[iShard]) >= shardSize { //为当前行分配空间
+					shards[iShard] = shards[iShard][0:shardSize]
+				} else {
+					shards[iShard] = make([]byte, shardSize)
+				}
+				outputs[outputCount] = shards[iShard]
+				matrixRows[outputCount] = dataDecodeMatrix[iShard]
+				outputCount++
+			}
+		}
+		//matrixRows是逆矩阵中 缺失数据对应的那几行（只包含真实数据部分，不包含编码后的部分）
+		//subshards是真实数据（编码后）还存在的行
+		//outputs得到是上面2个矩阵的乘积，即为真实数据的缺失部分
+		r.codeSomeShards(matrixRows, subShards, outputs[:outputCount], outputCount, shardSize)
+
+		if dataOnly {
+			// Exit out early if we are only interested in the data shards
+			return nil
+		}
+
+		// Now that we have all of the data shards intact, we can
+		// compute any of the parity that is missing.
+		//
+		// The input to the coding is ALL of the data shards, including
+		// any that we just calculated.  The output is whichever of the
+		// data shards were missing.
+
+		//现在我们所有数据分片都完整无缺，我们可以计算丢失的任何奇偶校验了。
+		//编码的输入是所有数据分片，包括我们刚刚计算出的所有数据分片。 输出是缺少的任何数据分片。
+		outputCount = 0
+		for iShard := r.DataShards; iShard < r.Shards; iShard++ { //
+			if len(shards[iShard]) == 0 { //传入的数据的已编码部分，如果被损坏
+				if cap(shards[iShard]) >= shardSize {
+					shards[iShard] = shards[iShard][0:shardSize]
+				} else {
+					shards[iShard] = make([]byte, shardSize)
+				}
+				outputs[outputCount] = shards[iShard]
+				matrixRows[outputCount] = r.parity[iShard-r.DataShards]
+				outputCount++
+			}
+		}
+		//matrixRows 编码矩阵中的非单位矩阵部分
+		//shards[:r.DataShards] 数据部分
+		r.codeSomeShards(matrixRows, shards[:r.DataShards], outputs[:outputCount], outputCount, shardSize)
+
 
 	} else if isfront == 0 && isblack == 1 && isParty == 0{
 		//对subMatrix做个处理
@@ -1042,10 +1102,68 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 			return err
 		}
 
+		// Re-create any data shards that were missing.
+		//
+		// The input to the coding is all of the shards we actually
+		// have, and the output is the missing data shards.  The computation
+		// is done using the special decode matrix we just built.
+		//要修改的部分！！！
+		//重新创建所有丢失的数据碎片。
+		//编码的输入是我们实际拥有的所有分片，而输出是缺少的数据分片。 该计算是使用我们刚刚构建的特殊解码矩阵完成的。
+		outputs := make([][]byte, r.ParityShards)
+		matrixRows := make([][]byte, r.ParityShards)
+		outputCount := 0
+
+		for iShard := 0; iShard < r.DataShards; iShard++ { //取出剩余数据中真实数据部分的 被损坏的行
+			if len(shards[iShard]) == 0 { //当前行损坏   损坏的行数会小于n？？
+				if cap(shards[iShard]) >= shardSize { //为当前行分配空间
+					shards[iShard] = shards[iShard][0:shardSize]
+				} else {
+					shards[iShard] = make([]byte, shardSize)
+				}
+				outputs[outputCount] = shards[iShard]
+				matrixRows[outputCount] = dataDecodeMatrix[iShard]
+				outputCount++
+			}
+		}
+		//matrixRows是逆矩阵中 缺失数据对应的那几行（只包含真实数据部分，不包含编码后的部分）
+		//subshards是真实数据（编码后）还存在的行
+		//outputs得到是上面2个矩阵的乘积，即为真实数据的缺失部分
+		r.codeSomeShards(matrixRows, subShards, outputs[:outputCount], outputCount, shardSize)
+
+		if dataOnly {
+			// Exit out early if we are only interested in the data shards
+			return nil
+		}
+
+		// Now that we have all of the data shards intact, we can
+		// compute any of the parity that is missing.
+		//
+		// The input to the coding is ALL of the data shards, including
+		// any that we just calculated.  The output is whichever of the
+		// data shards were missing.
+
+		//现在我们所有数据分片都完整无缺，我们可以计算丢失的任何奇偶校验了。
+		//编码的输入是所有数据分片，包括我们刚刚计算出的所有数据分片。 输出是缺少的任何数据分片。
+		outputCount = 0
+		for iShard := r.DataShards; iShard < r.Shards; iShard++ { //
+			if len(shards[iShard]) == 0 { //传入的数据的已编码部分，如果被损坏
+				if cap(shards[iShard]) >= shardSize {
+					shards[iShard] = shards[iShard][0:shardSize]
+				} else {
+					shards[iShard] = make([]byte, shardSize)
+				}
+				outputs[outputCount] = shards[iShard]
+				matrixRows[outputCount] = r.parity[iShard-r.DataShards]
+				outputCount++
+			}
+		}
+		//matrixRows 编码矩阵中的非单位矩阵部分
+		//shards[:r.DataShards] 数据部分
+		r.codeSomeShards(matrixRows, shards[:r.DataShards], outputs[:outputCount], outputCount, shardSize)
+
 
 	} else {
-
-
 
 		// If the inverted matrix isn't cached in the tree yet we must
 		// construct it ourselves and insert it into the tree for the
@@ -1083,66 +1201,68 @@ func (r *reedSolomon) reconstruct(shards [][]byte, dataOnly bool) error {
 			//}
 		}
 
-	}
-	// Re-create any data shards that were missing.
-	//
-	// The input to the coding is all of the shards we actually
-	// have, and the output is the missing data shards.  The computation
-	// is done using the special decode matrix we just built.
-	//要修改的部分！！！
-	//重新创建所有丢失的数据碎片。
-	//编码的输入是我们实际拥有的所有分片，而输出是缺少的数据分片。 该计算是使用我们刚刚构建的特殊解码矩阵完成的。
-	outputs := make([][]byte, r.ParityShards)
-	matrixRows := make([][]byte, r.ParityShards)
-	outputCount := 0
+		// Re-create any data shards that were missing.
+		//
+		// The input to the coding is all of the shards we actually
+		// have, and the output is the missing data shards.  The computation
+		// is done using the special decode matrix we just built.
+		//要修改的部分！！！
+		//重新创建所有丢失的数据碎片。
+		//编码的输入是我们实际拥有的所有分片，而输出是缺少的数据分片。 该计算是使用我们刚刚构建的特殊解码矩阵完成的。
+		outputs := make([][]byte, r.ParityShards)
+		matrixRows := make([][]byte, r.ParityShards)
+		outputCount := 0
 
-	for iShard := 0; iShard < r.DataShards; iShard++ { //取出剩余数据中真实数据部分的 被损坏的行
-		if len(shards[iShard]) == 0 { //当前行损坏   损坏的行数会小于n？？
-			if cap(shards[iShard]) >= shardSize { //为当前行分配空间
-				shards[iShard] = shards[iShard][0:shardSize]
-			} else {
-				shards[iShard] = make([]byte, shardSize)
+		for iShard := 0; iShard < r.DataShards; iShard++ { //取出剩余数据中真实数据部分的 被损坏的行
+			if len(shards[iShard]) == 0 { //当前行损坏   损坏的行数会小于n？？
+				if cap(shards[iShard]) >= shardSize { //为当前行分配空间
+					shards[iShard] = shards[iShard][0:shardSize]
+				} else {
+					shards[iShard] = make([]byte, shardSize)
+				}
+				outputs[outputCount] = shards[iShard]
+				matrixRows[outputCount] = dataDecodeMatrix[iShard]
+				outputCount++
 			}
-			outputs[outputCount] = shards[iShard]
-			matrixRows[outputCount] = dataDecodeMatrix[iShard]
-			outputCount++
 		}
-	}
-	//matrixRows是逆矩阵中 缺失数据对应的那几行（只包含真实数据部分，不包含编码后的部分）
-	//subshards是真实数据（编码后）还存在的行
-	//outputs得到是上面2个矩阵的乘积，即为真实数据的缺失部分
-	r.codeSomeShards(matrixRows, subShards, outputs[:outputCount], outputCount, shardSize)
+		//matrixRows是逆矩阵中 缺失数据对应的那几行（只包含真实数据部分，不包含编码后的部分）
+		//subshards是真实数据（编码后）还存在的行
+		//outputs得到是上面2个矩阵的乘积，即为真实数据的缺失部分
+		r.codeSomeShards(matrixRows, subShards, outputs[:outputCount], outputCount, shardSize)
 
-	if dataOnly {
-		// Exit out early if we are only interested in the data shards
-		return nil
-	}
+		if dataOnly {
+			// Exit out early if we are only interested in the data shards
+			return nil
+		}
 
-	// Now that we have all of the data shards intact, we can
-	// compute any of the parity that is missing.
-	//
-	// The input to the coding is ALL of the data shards, including
-	// any that we just calculated.  The output is whichever of the
-	// data shards were missing.
+		// Now that we have all of the data shards intact, we can
+		// compute any of the parity that is missing.
+		//
+		// The input to the coding is ALL of the data shards, including
+		// any that we just calculated.  The output is whichever of the
+		// data shards were missing.
 
-	//现在我们所有数据分片都完整无缺，我们可以计算丢失的任何奇偶校验了。
-	//编码的输入是所有数据分片，包括我们刚刚计算出的所有数据分片。 输出是缺少的任何数据分片。
-	outputCount = 0
-	for iShard := r.DataShards; iShard < r.Shards; iShard++ { //
-		if len(shards[iShard]) == 0 { //传入的数据的已编码部分，如果被损坏
-			if cap(shards[iShard]) >= shardSize {
-				shards[iShard] = shards[iShard][0:shardSize]
-			} else {
-				shards[iShard] = make([]byte, shardSize)
+		//现在我们所有数据分片都完整无缺，我们可以计算丢失的任何奇偶校验了。
+		//编码的输入是所有数据分片，包括我们刚刚计算出的所有数据分片。 输出是缺少的任何数据分片。
+		outputCount = 0
+		for iShard := r.DataShards; iShard < r.Shards; iShard++ { //
+			if len(shards[iShard]) == 0 { //传入的数据的已编码部分，如果被损坏
+				if cap(shards[iShard]) >= shardSize {
+					shards[iShard] = shards[iShard][0:shardSize]
+				} else {
+					shards[iShard] = make([]byte, shardSize)
+				}
+				outputs[outputCount] = shards[iShard]
+				matrixRows[outputCount] = r.parity[iShard-r.DataShards]
+				outputCount++
 			}
-			outputs[outputCount] = shards[iShard]
-			matrixRows[outputCount] = r.parity[iShard-r.DataShards]
-			outputCount++
 		}
+		//matrixRows 编码矩阵中的非单位矩阵部分
+		//shards[:r.DataShards] 数据部分
+		r.codeSomeShards(matrixRows, shards[:r.DataShards], outputs[:outputCount], outputCount, shardSize)
+
 	}
-	//matrixRows 编码矩阵中的非单位矩阵部分
-	//shards[:r.DataShards] 数据部分
-	r.codeSomeShards(matrixRows, shards[:r.DataShards], outputs[:outputCount], outputCount, shardSize)
+
 
 	return nil
 }
